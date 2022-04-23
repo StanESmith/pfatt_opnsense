@@ -1,6 +1,6 @@
 # About
 
-This repository includes my notes on enabling a true bridge mode setup with AT&T U-Verse and pfSense. This method utilizes [netgraph](https://www.freebsd.org/cgi/man.cgi?netgraph(4)) which is a graph based kernel networking subsystem of FreeBSD. This low-level solution was required to account for the unique issues surrounding bridging 802.1X traffic and tagging a VLAN with an id of 0. I've tested and confirmed this setup works with AT&T U-Verse Internet on the ARRIS NVG589, NVG599 and BGW210-700 residential gateways (probably others too). For Pace 5268AC see special details below.
+This repository includes my notes on enabling a true bridge mode setup with AT&T U-Verse and OPNsense. This method utilizes [netgraph](https://www.freebsd.org/cgi/man.cgi?netgraph(4)) which is a graph based kernel networking subsystem of FreeBSD. This low-level solution was required to account for the unique issues surrounding bridging 802.1X traffic and tagging a VLAN with an id of 0. I've tested and confirmed this setup works with AT&T U-Verse Internet on the ARRIS NVG589, NVG599 and BGW210-700 residential gateways (probably others too). For Pace 5268AC see special details below.
 
 There are a few other methods to accomplish true bridge mode, so be sure to see what easiest for you. True Bridge Mode is also possible in a Linux via ebtables or using hardware with a VLAN swap trick. For me, I was not using a Linux-based router and the VLAN swap did not seem to work for me.
 
@@ -23,7 +23,7 @@ First, let's talk about what happens in the standard setup (without any bypass).
 
 ## Bypass Procedure
 
-To bypass the gateway using pfSense, we can emulate the standard procedure. If we connect our Residential Gateway and ONT to our pfSense box, we can bridge the 802.1/X authentication sequence, tag our WAN traffic as VLAN0, and request a public IPv4 via DHCP using a spoofed MAC address.
+To bypass the gateway using OPNsense, we can emulate the standard procedure. If we connect our Residential Gateway and ONT to our OPNsense box, we can bridge the 802.1/X authentication sequence, tag our WAN traffic as VLAN0, and request a public IPv4 via DHCP using a spoofed MAC address.
 
 Unfortunately, there are some challenges with emulating this process. First, it's against RFC to bridge 802.1/X traffic and it is not supported. Second, tagging traffic as VLAN0 is not supported through the standard interfaces.
 
@@ -34,7 +34,7 @@ Residential Gateway
 [ONT Port]
   |
   |
-[nic0] pfSense [nic1]
+[nic0] OPNsense [nic1]
                  |
                  |
                [ONT]
@@ -45,10 +45,10 @@ With netgraph, our procedure looks like this (at a high level):
 
 1. The Residential Gateway initiates a 802.1/X EAPOL-START.
 1. The packet then is bridged through netgraph to the ONT interface.
-1. If the packet matches an 802.1/X type (which is does), it is passed to the ONT interface. If it does not, the packet is discarded. This prevents our Residential Gateway from initiating DHCP. We want pfSense to handle that.
+1. If the packet matches an 802.1/X type (which is does), it is passed to the ONT interface. If it does not, the packet is discarded. This prevents our Residential Gateway from initiating DHCP. We want OPNsense to handle that.
 1. The ONT should then see and respond to the EAPOL-START, which is passed back through our netgraph back to the residential gateway. At this point, the 802.1/X authentication should be complete.
 1. netgraph has also created an interface for us called `ngeth0`. This interface is connected to `ng_vlan` which is configured to tag all traffic as VLAN0 before sending it on to the ONT interface.
-1. pfSense can then be configured to use `ngeth0` as the WAN interface.
+1. OPNsense can then be configured to use `ngeth0` as the WAN interface.
 1. Next, we spoof the MAC address of the residential gateway and request a DHCP lease on `ngeth0`. The packets get tagged as VLAN0 and exit to the ONT.
 1. Now the DHCP handshake should complete and we should be on our way!
 
@@ -60,17 +60,9 @@ But enough talk. Now for the fun part!
 
 ## Prerequisites
 
-* At least __three__ physical network interfaces on your pfSense server
+* At least __three__ physical network interfaces on your OPNsense server
 * The MAC address of your Residential Gateway
-* Local or console access to pfSense
-* pfSense 2.4.5 running on amd64 architecture _(If you are running pfSense 2.4.4 please see instruction in the [Before-pfSense-2.4.5 branch](https://github.com/MonkWho/pfatt/blob/Before-pfSense-2.4.5/README.md))_
-
-At this time there is a bug in pFsense 2.4.5 and [ng_etf module is only included in pFsense 2.4.5 _amd64 build_](
-https://redmine.pfsense.org/issues/10463). Should be fixed in 2.4.5-p1.
-
-PFSense Builds for Netgate hardware may not include ng_etf (Confimred on SG4860-Desktop 2.4.5-p1). Confirm ng_etf exists before continuing and look at [Before-pfSense-2.4.5 branch](https://github.com/MonkWho/pfatt/blob/Before-pfSense-2.4.5/README.md) for gudiance if it doesn't exist.
-
-If you are running pfSense on anything other than amd64 architecture you should compile your own version of ng_etf. Look at [Before-pfSense-2.4.5 branch](https://github.com/MonkWho/pfatt/blob/Before-pfSense-2.4.5/README.md) for some guidance on compiling and running your own ng_etf.
+* Local or console access to OPNsense
 
 If you only have two NICs, you can buy this cheap USB 100Mbps NIC [from Amazon](https://www.amazon.com/gp/product/B00007IFED) as your third. It has the Asix AX88772 chipset, which is supported in FreeBSD with the [axe](https://www.freebsd.org/cgi/man.cgi?query=axe&sektion=4) driver. I've confirmed it works in my setup. The driver was already loaded and I didn't have to install or configure anything to get it working. Also, don't worry about the poor performance of USB or 100Mbps NICs. This third NIC will only send/recieve a few packets periodicaly to authenticate your Router Gateway. The rest of your traffic will utilize your other (and much faster) NICs.
 
@@ -83,29 +75,20 @@ If you only have two NICs, you can buy this cheap USB 100Mbps NIC [from Amazon](
     RG_ETHER_ADDR='xx:xx:xx:xx:xx:xx' # MAC address of Residential Gateway
     ```
 
-2. Copy `bin/pfatt.sh` to `/root/bin` (or any directory):
+2. Copy `bin/opnatt.sh` to `/user/local/etc/rc.syshook.d/early/99-opnatt.sh` (or any directory):
     ```
-    ssh root@pfsense mkdir /root/bin
-    scp bin/pfatt.sh root@pfsense:/root/bin/
-    ssh root@pfsense chmod +x /root/bin/pfatt.sh
+    scp bin/pfatt.sh root@OPNsense:/user/local/etc/rc.syshook.d/early/99-opnatt.sh
+    ssh root@OPNsense chmod +x /user/local/etc/rc.syshook.d/early/99-opnatt.sh
     ```
 
     **NOTE:** If you have the 5268AC, you'll also need to install `pfatt-5268AC-startup.sh` and `pfatt-5268.sh`. The scripts monitor your connection and disable or enable the EAP bridging as needed. It's a hacky workaround, but it enables you to keep your 5268AC connected, avoid EAP-Logoffs and survive reboots. Consider changing the `PING_HOST` in `pfatt-5268AC.sh` to a reliable host. Then perform these additional steps to install:
     ```
-    scp bin/pfatt-5268AC-startup.sh root@pfsense:/usr/local/etc/rc.d/pfatt-5268AC-startup.sh
-    scp bin/pfatt-5268AC.sh root@pfsense:/root/bin/
-    ssh root@pfsense chmod +x /usr/local/etc/rc.d/pfatt-5268AC-startup.sh /root/bin/pfatt-5268AC.sh
+    scp bin/pfatt-5268AC-startup.sh root@OPNsense:/usr/local/etc/rc.d/pfatt-5268AC-startup.sh
+    scp bin/pfatt-5268AC.sh root@OPNsense:/root/bin/
+    ssh root@OPNsense chmod +x /usr/local/etc/rc.d/pfatt-5268AC-startup.sh /root/bin/pfatt-5268AC.sh
     ```
 
-3. To start pfatt.sh script at the beginning of the boot process pfSense team recomments you use a package called shellcmd. Use pfSense package installer to find and install it. Once you have shellcmd package installed you can find it in Services > Shellcmd. Now add a new command and fill it up accordingly (make sure to select earlyshellcmd from a dropdown):
-    ```
-    Command: /root/bin/pfatt.sh
-    Shellcmd Type: earlyshellcmd
-    ```
-    It should look like this:
-    ![Shellcmd Settings](img/Shellcmd.png)
-
-    This can also be acomplished by manually editing your pfSense /conf/config.xml file. Add <earlyshellcmd>/root/bin/pfatt.sh</earlyshellcmd> above </system>. This method is not recommended and is frowned upon by pfSense team.
+3. The pfatt.sh script will start with the boot process due to it's placement in /user/local/etc/rc.syshook.d/early/.
 
 4. Connect cables:
     - `$RG_IF` to Residential Gateway on the ONT port (not the LAN ports!)
@@ -114,7 +97,7 @@ If you only have two NICs, you can buy this cheap USB 100Mbps NIC [from Amazon](
 
 5. Prepare for console access.
 6. Reboot.
-7. pfSense will detect new interfaces on bootup. Follow the prompts on the console to configure `ngeth0` as your pfSense WAN. Your LAN interface should not normally change. However, if you moved or re-purposed your LAN interface for this setup, you'll need to re-apply any existing configuration (like your VLANs) to your new LAN interface. pfSense does not need to manage `$RG_IF` or `$ONT_IF`. I would advise not enabling those interfaces in pfSense as it can cause problems with the netgraph.
+7. OPNsense will detect new interfaces on bootup. Follow the prompts on the console to configure `ngeth0` as your OPNsense WAN. Your LAN interface should not normally change. However, if you moved or re-purposed your LAN interface for this setup, you'll need to re-apply any existing configuration (like your VLANs) to your new LAN interface. OPNsense does not need to manage `$RG_IF` or `$ONT_IF`. I would advise not enabling those interfaces in OPNsense as it can cause problems with the netgraph.
 8. In the webConfigurator, configure the  WAN interface (`ngeth0`) to DHCP using the MAC address of your Residential Gateway.
 
 If everything is setup correctly, netgraph should be bridging EAP traffic between the ONT and RG, tagging the WAN traffic with VLAN0, and your WAN interface configured with an IPv4 address via DHCP.
@@ -122,16 +105,6 @@ If everything is setup correctly, netgraph should be bridging EAP traffic betwee
 # IPv6 Setup
 
 Once your netgraph setup is in place and working, there aren't any netgraph changes required to the setup to get IPv6 working. These instructions can also be followed with a different bypass method other than the netgraph method. Big thanks to @pyrodex1980's [post](http://www.dslreports.com/forum/r32118263-) on DSLReports for sharing your notes.
-
-This setup assumes you have a fairly recent version of pfSense. I'm using 2.4.5.
-
-**DUID Setup**
-
-1. Go to _System > Advanced > Networking_
-1. Configure **DHCP6 DUID** to _DUID-EN_
-1. Configure **DUID-EN** to _3561_
-1. Configure your **IANA Private Enterprise Number**. This number is unique for each customer and (I believe) based off your Residential Gateway serial number. You can generate your DUID using [gen-duid.sh](https://github.com/MonkWho/pfatt/blob/master/bin/gen-duid.sh), which just takes a few inputs. Or, you can take a pcap of the Residential Gateway with some DHCPv6 traffic. Then fire up Wireshark and look for the value in _DHCPv6 > Client Identifier > Identifier_. Add the value as colon separated hex values `00:00:00`.
-1. Save
 
 **WAN Setup**
 
@@ -149,7 +122,7 @@ This setup assumes you have a fairly recent version of pfSense. I'm using 2.4.5.
 1. Go to _Interfaces > LAN_
 1. Change the **IPv6 Configuration Type** to _Track Interface_
 1. Under Track IPv6 Interface, assign **IPv6 Interface** to your WAN interface.
-1. Configure **IPv6 Prefix ID** to _1_. We start at _1_ and not _0_ because pfSense will use prefix/address ID _0_ for itself and it seems AT&T is flakey about assigning IPv6 prefixes when a request is made with a prefix ID that matches the prefix/address ID of the router.
+1. Configure **IPv6 Prefix ID** to _0_. You *CAN* use IPv6 Prefix id 0, as OPNSense does *NOT* assign a routeable IPv6 address to ngeth0
 1. Save
 
 If you have additional LAN interfaces repeat these steps for each interface except be sure to provide an **IPv6 Prefix ID** that is not _0_ and is unique among the interfaces you've configured so far.
@@ -205,7 +178,7 @@ Verify you are seeing 802.1Q (tagged as vlan0) traffic on your `$ONT_IF ` interf
 
 Verify the DHCP request is firing using the MAC address of your Residential Gateway.
 
-If the VLAN0 traffic is being properly handled, next pfSense will need to request an IP. `ngeth0` needs to DHCP using the authorized MAC address. You should see an untagged DCHP request on `ngeth0` carry over to the `$ONT_IF` interface tagged as VLAN0. Then you should get a DHCP response and you're in business.
+If the VLAN0 traffic is being properly handled, next OPNsense will need to request an IP. `ngeth0` needs to DHCP using the authorized MAC address. You should see an untagged DCHP request on `ngeth0` carry over to the `$ONT_IF` interface tagged as VLAN0. Then you should get a DHCP response and you're in business.
 
 If you don't see traffic being bridged between `ngeth0` and `$ONT_IF`, then netgraph is not setup correctly.
 
@@ -271,10 +244,6 @@ $ ngctl show ue0:
 /usr/sbin/ngctl shutdown ngeth0:
 ```
 
-## pfSense
-
-In some circumstances, pfSense may alter your netgraph. This is especially true if pfSense manages either your `$RG_IF` or `$ONT_IF`. If you make some interface changes and your connection breaks, check to see if your netgraph was changed.
-
 # Virtualization Notes
 
 This setup has been tested on physical servers and virtual machines. Virtualization adds another layer of complexity for this setup, and will take extra consideration.
@@ -301,14 +270,7 @@ There is a whole thread on this at [DSLreports](http://www.dslreports.com/forum/
 
 However, I don't think this works for everyone. I had to explicitly tag my WAN traffic to VLAN0 which wasn't supported on my switch.
 
-## OPNSense / FreeBSD
-For OPNSense 20.1:
-follow the pfSense instructions, EXCEPT:
-1) use file opnatt.sh
-2) do *NOT* install the ng_etf.ko, as OPNSense already has this module installed.
-3) put the opnatt.sh script into `/usr/local/etc/rc.syshook.d/early` as `99-opnatt.sh`
-4) do *NOT* modify config.xml, nor do any of the duid stuff
-5) note: You *CAN* use IPv6 Prefix id 0, as OPNSense does *NOT* assign a routeable IPv6 address to ngeth0
+## FreeBSD
 
 I haven't tried this with native FreeBSD, but I imagine the process is ultimately the same with netgraph. Feel free to submit a PR with notes on your experience.
 
